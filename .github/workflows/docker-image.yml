@@ -2,7 +2,7 @@ name: Build and Publish Multi-Arch Docker Image to GHCR
 
 on:
   push:
-    branches: ['main']
+    branches: ['master']
 
 env:
   REGISTRY: ghcr.io
