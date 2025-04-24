@@ -69,10 +69,35 @@ def load_deleted_accounts(filename="deleted_accounts.txt"):
         print(f"{COLOR_RED}{EMOJI_ERROR} {filename} not found{COLOR_RESET}")
     return users
 
+async def ping_bot(client, bot, semaphore):
+    """Ping a single bot and check for response."""
+    async with semaphore:
+        username = bot.username or str(bot.id)
+        try:
+            print(f"{COLOR_YELLOW}⏳ Pinging @{username}{COLOR_RESET}")
+            sent_message = await client.send_message(bot, '/start')
+            await asyncio.sleep(1.5)  # Short wait for response
+            messages = await client.get_messages(bot, limit=3)
+            if not messages or all("/start" in m.message for m in messages):
+                print(f"{COLOR_RED}{EMOJI_ERROR} No response from @{username}{COLOR_RESET}")
+                return username, False
+            else:
+                print(f"{COLOR_GREEN}{EMOJI_SUCCESS} @{username} responded{COLOR_RESET}")
+                return username, True
+        except FloodWaitError as e:
+            print(f"{COLOR_YELLOW}{EMOJI_WARNING} Rate limit hit, waiting {e.seconds}s...{COLOR_RESET}")
+            await asyncio.sleep(e.seconds + 1)
+            return username, False
+        except Exception as e:
+            print(f"{COLOR_RED}{EMOJI_ERROR} Error with @{username}: {e}{COLOR_RESET}")
+            return username, False
+
 async def scan_dead_bots():
     """Scan for dead bots and save results to dead_bots.txt."""
     seen_bots = load_set("seen_bots.txt")
     dead_bots = load_set("dead_bots.txt")
+    semaphore = asyncio.Semaphore(10)  # Limit to 10 concurrent requests
+
     async with TelegramClient(session_name, api_id, api_hash) as client:
         print(f"{COLOR_BLUE}{EMOJI_INFO} Fetching your Telegram dialogs...{COLOR_RESET}")
         dialogs = await client.get_dialogs(limit=None)
@@ -80,25 +105,16 @@ async def scan_dead_bots():
         new_bots = [b for b in bot_users if (b.username or str(b.id)) not in seen_bots]
         print(f"{COLOR_BLUE}{EMOJI_INFO} Found {len(bot_users)} bots, scanning {len(new_bots)} new ones...{COLOR_RESET}")
 
-        for bot in new_bots:
-            username = bot.username or str(bot.id)
+        # Create concurrent tasks for pinging bots
+        tasks = [ping_bot(client, bot, semaphore) for bot in new_bots]
+        results = await asyncio.gather(*tasks)
+
+        # Process results
+        for username, responded in results:
             seen_bots.add(username)
-            try:
-                print(f"{COLOR_YELLOW}⏳ Pinging @{username}{COLOR_RESET}")
-                await client.send_message(bot, '/start')
-                await asyncio.sleep(1.5)
-                messages = await client.get_messages(bot, limit=3)
-                if not messages or all("/start" in m.message for m in messages):
-                    dead_bots.add(username)
-                    print(f"{COLOR_RED}{EMOJI_ERROR} No response from @{username}{COLOR_RESET}")
-                else:
-                    print(f"{COLOR_GREEN}{EMOJI_SUCCESS} @{username} responded{COLOR_RESET}")
-            except FloodWaitError as e:
-                print(f"{COLOR_YELLOW}{EMOJI_WARNING} Rate limit hit, waiting {e.seconds}s...{COLOR_RESET}")
-                time.sleep(e.seconds + 1)
-            except Exception as e:
-                print(f"{COLOR_RED}{EMOJI_ERROR} Error with @{username}: {e}{COLOR_RESET}")
+            if not responded:
                 dead_bots.add(username)
+
     save_set("seen_bots.txt", seen_bots)
     save_set("dead_bots.txt", dead_bots)
     print(f"{COLOR_GREEN}{EMOJI_INFO} Scan complete! Total dead bots: {len(dead_bots)}{COLOR_RESET}")
