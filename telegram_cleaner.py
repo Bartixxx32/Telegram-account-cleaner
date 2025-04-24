@@ -135,6 +135,30 @@ async def scan_deleted_accounts():
         print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Saved {len(deleted_users)} deleted accounts to deleted_accounts.txt{COLOR_RESET}")
     input(f"{COLOR_BLUE}{EMOJI_INFO} Press Enter to return to menu...{COLOR_RESET}")
 
+async def process_dead_bot(client, username, semaphore):
+    """Process a single dead bot (delete chat or leave channel)."""
+    async with semaphore:
+        name = f"@{username}" if username.isalnum() else username
+        try:
+            entity = await client.get_entity(username)
+            if hasattr(entity, 'megagroup') or hasattr(entity, 'broadcast'):
+                await client(LeaveChannelRequest(entity))
+                print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Left channel/group {name}{COLOR_RESET}")
+            else:
+                await client(DeleteHistoryRequest(peer=entity, max_id=0, revoke=True))
+                print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Deleted chat with {name}{COLOR_RESET}")
+            return True
+        except FloodWaitError as e:
+            print(f"{COLOR_YELLOW}{EMOJI_WARNING} Rate limit hit, waiting {e.seconds}s...{COLOR_RESET}")
+            await asyncio.sleep(e.seconds + 1)
+            return False
+        except PeerIdInvalidError:
+            print(f"{COLOR_RED}{EMOJI_ERROR} Could not find {name}{COLOR_RESET}")
+            return True  # Skip to next bot
+        except Exception as e:
+            print(f"{COLOR_RED}{EMOJI_ERROR} Error with {name}: {e}{COLOR_RESET}")
+            return True  # Skip to next bot
+
 async def unsubscribe_dead_bots():
     """Unsubscribe from dead bots listed in dead_bots.txt."""
     try:
@@ -147,24 +171,25 @@ async def unsubscribe_dead_bots():
         return
 
     async with TelegramClient(session_name, api_id, api_hash) as client:
-        for username in usernames:
-            name = f"@{username}" if username.isalnum() else username
-            try:
-                entity = await client.get_entity(username)
-                if hasattr(entity, 'megagroup') or hasattr(entity, 'broadcast'):
-                    await client(LeaveChannelRequest(entity))
-                    print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Left channel/group {name}{COLOR_RESET}")
-                else:
-                    await client(DeleteHistoryRequest(peer=entity, max_id=0, revoke=True))
-                    print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Deleted chat with {name}{COLOR_RESET}")
-                await asyncio.sleep(1.5)
-            except FloodWaitError as e:
-                print(f"{COLOR_YELLOW}{EMOJI_WARNING} Rate limit hit, waiting {e.seconds}s...{COLOR_RESET}")
-                time.sleep(e.seconds + 1)
-            except PeerIdInvalidError:
-                print(f"{COLOR_RED}{EMOJI_ERROR} Could not find {name}{COLOR_RESET}")
-            except Exception as e:
-                print(f"{COLOR_RED}{EMOJI_ERROR} Error with {name}: {e}{COLOR_RESET}")
+        semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests
+        batch_size = 10  # Process 10 bots per batch
+        batch_delay = 10  # Wait 10 seconds between batches
+
+        for i in range(0, len(usernames), batch_size):
+            batch = usernames[i:i + batch_size]
+            print(f"{COLOR_BLUE}{EMOJI_INFO} Processing batch {i // batch_size + 1} ({len(batch)} bots)...{COLOR_RESET}")
+            tasks = [process_dead_bot(client, username, semaphore) for username in batch]
+            results = await asyncio.gather(*tasks)
+
+            # Check if any task hit a rate limit
+            if not all(results):
+                print(f"{COLOR_YELLOW}{EMOJI_WARNING} Batch paused due to rate limit. Waiting for cooldown...{COLOR_RESET}")
+                continue  # Rely on FloodWaitError handling within process_dead_bot
+
+            if i + batch_size < len(usernames):
+                print(f"{COLOR_YELLOW}{EMOJI_INFO} Waiting {batch_delay}s before next batch...{COLOR_RESET}")
+                await asyncio.sleep(batch_delay)
+
         print(f"{COLOR_GREEN}{EMOJI_INFO} Unsubscribe process complete!{COLOR_RESET}")
     input(f"{COLOR_BLUE}{EMOJI_INFO} Press Enter to return to menu...{COLOR_RESET}")
 
