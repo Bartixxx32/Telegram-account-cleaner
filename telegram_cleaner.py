@@ -3,6 +3,8 @@ import os
 import time
 import json
 import logging
+import sys
+import codecs
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple, Optional, Any
 from functools import wraps
@@ -14,29 +16,43 @@ from telethon.errors import FloodWaitError, PeerIdInvalidError, UserIdInvalidErr
 from telethon.tl.custom.dialog import Dialog
 from telethon import utils
 
-# Configure logging
-telethon_logger = logging.getLogger('telethon')
-telethon_logger.setLevel(logging.ERROR)  # Only show errors, not INFO messages
-
-# Then your existing logger setup continues
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("telegram_cleaner.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger("TelegramCleaner")
+# Force UTF-8 encoding for stdout/stderr if possible
+try:
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+except (AttributeError, UnicodeError):
+    # Fall back to replacing characters if that fails
+    pass
 
 
-# Emojis for output
-EMOJI_SUCCESS = "✅"
-EMOJI_ERROR = "❌"
-EMOJI_WARNING = "⚠️"
-EMOJI_INFO = "ℹ️"
-EMOJI_MENU = "📋"
-EMOJI_CLEANUP = "🧹"
+# Check if emojis can be displayed
+def supports_unicode():
+    try:
+        # First check if sys.stdout has an encoding attribute
+        encoding = getattr(sys.stdout, 'encoding', None)
+        if encoding is None:
+            return False
+        "✅".encode(encoding)
+        return True
+    except (AttributeError, UnicodeEncodeError):
+        return False
+
+
+# Set emoji constants based on Unicode support
+if supports_unicode():
+    EMOJI_SUCCESS = "✅"
+    EMOJI_ERROR = "❌"
+    EMOJI_WARNING = "⚠️"
+    EMOJI_INFO = "ℹ️"
+    EMOJI_MENU = "📋"
+    EMOJI_CLEANUP = "🧹"
+else:
+    EMOJI_SUCCESS = "[OK]"
+    EMOJI_ERROR = "[ERROR]"
+    EMOJI_WARNING = "[WARN]"
+    EMOJI_INFO = "[INFO]"
+    EMOJI_MENU = "[MENU]"
+    EMOJI_CLEANUP = "[CLEAN]"
 
 # ANSI escape codes for colors
 COLOR_GREEN = "\033[92m"
@@ -44,6 +60,45 @@ COLOR_RED = "\033[91m"
 COLOR_YELLOW = "\033[93m"
 COLOR_BLUE = "\033[94m"
 COLOR_RESET = "\033[0m"
+
+
+# Safe print function for Unicode issues
+def safe_print(text):
+    """Print text safely, replacing characters that can't be displayed."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        # Try printing with replacing problematic characters
+        print(text.encode('ascii', 'replace').decode('ascii'))
+
+
+# Configure logging with error handling for Unicode
+class SafeStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            super().emit(record)
+        except UnicodeEncodeError:
+            msg = record.getMessage()
+            safe_msg = msg.encode('ascii', 'replace').decode('ascii')
+            record.msg = safe_msg
+            record.args = ()
+            super().emit(record)
+
+
+# Disable Telethon's loggers
+telethon_logger = logging.getLogger('telethon')
+telethon_logger.setLevel(logging.ERROR)  # Only show errors, not INFO messages
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("telegram_cleaner.log", encoding='utf-8'),
+        SafeStreamHandler()
+    ]
+)
+logger = logging.getLogger("TelegramCleaner")
 
 # Session name for TelegramClient
 SESSION_NAME = "telegram_cleaner"
@@ -171,10 +226,15 @@ class ProgressTracker:
 
         bar_length = 30
         filled_length = int(bar_length * self.current // self.total) if self.total > 0 else bar_length
-        bar = '█' * filled_length + '-' * (bar_length - filled_length)
+        bar = '#' * filled_length + '-' * (bar_length - filled_length)
 
-        print(f"\r{self.description}: [{bar}] {percentage:.1f}% ({self.current}/{self.total}) "
-              f"✅{self.success_count} ❌{self.error_count} ETA: {eta_str}", end="")
+        try:
+            print(f"\r{self.description}: [{bar}] {percentage:.1f}% ({self.current}/{self.total}) "
+                  f"{EMOJI_SUCCESS}{self.success_count} {EMOJI_ERROR}{self.error_count} ETA: {eta_str}", end="")
+        except UnicodeEncodeError:
+            # Fallback for consoles that don't support Unicode
+            print(f"\r{self.description}: [{bar}] {percentage:.1f}% ({self.current}/{self.total}) "
+                  f"OK:{self.success_count} ERR:{self.error_count} ETA: {eta_str}", end="")
 
         if self.current == self.total:
             print()  # Add newline at the end
@@ -281,11 +341,11 @@ class TelegramCleaner:
         # Load or prompt for API credentials
         self.api_id, self.api_hash = self.storage.load_credentials()
         if not self.api_id or not self.api_hash:
-            print(f"{COLOR_BLUE}{EMOJI_INFO} Please enter your Telegram API credentials.{COLOR_RESET}")
+            safe_print(f"{COLOR_BLUE}{EMOJI_INFO} Please enter your Telegram API credentials.{COLOR_RESET}")
             self.api_id = input("API ID: ")
             self.api_hash = input("API Hash: ")
             self.storage.save_credentials(self.api_id, self.api_hash)
-            print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Saved API credentials.{COLOR_RESET}")
+            safe_print(f"{COLOR_GREEN}{EMOJI_SUCCESS} Saved API credentials.{COLOR_RESET}")
 
         # Create semaphore for concurrency control
         self.semaphore = asyncio.Semaphore(self.concurrency_limit)
@@ -595,14 +655,14 @@ class TelegramCleanerCLI:
     def print_menu(self):
         """Display the CLI menu."""
         self.clear_screen()
-        print(f"{COLOR_BLUE}{EMOJI_MENU} === Telegram Cleaner Menu === {COLOR_RESET}")
-        print(f"1. {EMOJI_INFO} Scan for dead bots")
-        print(f"2. {EMOJI_INFO} Scan for deleted accounts")
-        print(f"3. {EMOJI_SUCCESS} Unsubscribe from dead bots")
-        print(f"4. {EMOJI_SUCCESS} Delete chats of deleted accounts")
-        print(f"5. {EMOJI_CLEANUP} Clean up temporary files")
-        print(f"6. {EMOJI_ERROR} Exit")
-        print(f"{COLOR_BLUE}============================={COLOR_RESET}")
+        safe_print(f"{COLOR_BLUE}{EMOJI_MENU} === Telegram Cleaner Menu === {COLOR_RESET}")
+        safe_print(f"1. {EMOJI_INFO} Scan for dead bots")
+        safe_print(f"2. {EMOJI_INFO} Scan for deleted accounts")
+        safe_print(f"3. {EMOJI_SUCCESS} Unsubscribe from dead bots")
+        safe_print(f"4. {EMOJI_SUCCESS} Delete chats of deleted accounts")
+        safe_print(f"5. {EMOJI_CLEANUP} Clean up temporary files")
+        safe_print(f"6. {EMOJI_ERROR} Exit")
+        safe_print(f"{COLOR_BLUE}============================={COLOR_RESET}")
 
     async def run(self):
         """Main CLI loop with menu."""
@@ -624,10 +684,10 @@ class TelegramCleanerCLI:
                 elif choice == "5":
                     await self.cleaner.cleanup_files()
                 elif choice == "6":
-                    print(f"{COLOR_GREEN}{EMOJI_INFO} Goodbye! Thanks for using Telegram Cleaner.{COLOR_RESET}")
+                    safe_print(f"{COLOR_GREEN}{EMOJI_INFO} Goodbye! Thanks for using Telegram Cleaner.{COLOR_RESET}")
                     break
                 else:
-                    print(f"{COLOR_RED}{EMOJI_ERROR} Invalid choice. Please select 1-6.{COLOR_RESET}")
+                    safe_print(f"{COLOR_RED}{EMOJI_ERROR} Invalid choice. Please select 1-6.{COLOR_RESET}")
             except Exception as e:
                 logger.error(f"{COLOR_RED}{EMOJI_ERROR} An error occurred: {e}{COLOR_RESET}")
                 import traceback
