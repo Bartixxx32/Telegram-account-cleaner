@@ -87,8 +87,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}-linux-arm64
           labels: ${{ steps.meta.outputs.labels }}
 
-  # Job to build and push for linux/arm/v6
-  build-arm-v6:
+  # Job to build and push for linux/arm/v7
+  build-arm-v7:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -117,19 +117,19 @@ jobs:
             type=ref,event=branch
             type=ref,event=tag
 
-      - name: Build and push Docker image for linux/arm/v6
+      - name: Build and push Docker image for linux/arm/v7
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          platforms: linux/arm/v6
-          tags: ${{ steps.meta.outputs.tags }}-linux-arm-v6
+          platforms: linux/arm/v7
+          tags: ${{ steps.meta.outputs.tags }}-linux-arm-v7
           labels: ${{ steps.meta.outputs.labels }}
 
   # Job to create and push the multi-architecture manifest
   manifest:
     runs-on: ubuntu-latest
-    needs: [build-amd64, build-arm64, build-arm-v6]
+    needs: [build-amd64, build-arm64, build-arm-v7]
     permissions:
       contents: read
       packages: write
@@ -146,5 +146,5 @@ jobs:
           docker manifest create ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             --amend ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-linux-amd64 \
             --amend ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-linux-arm64 \
-            --amend ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-linux-arm-v6
+            --amend ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-linux-arm-v7
           docker manifest push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
